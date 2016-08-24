@@ -1,0 +1,164 @@
+#include "vm/spage.h"
+#include <stdio.h>
+#include <string.h>
+#include "threads/synch.h"
+#include "threads/palloc.h"
+#include "threads/pte.h"
+#include "threads/malloc.h"
+#include "userprog/pagedir.h"
+#include "vm/swap.h"
+#include "vm/frame.h"
+#include "filesys/off_t.h"
+
+/* Initiation function */
+void 
+sup_page_table_init(void)
+{
+  list_init(&sup_page_table);
+  lock_init(&spt_lock);
+}
+
+void
+sup_page_table_destroy(void)
+{
+  struct list_elem *e;
+  for (e = list_begin (&sup_page_table); e != list_end (&sup_page_table);)
+  {
+    struct spage_elem *sp = list_entry(e, struct spage_elem, elem);
+    struct list_elem * e_next = list_next(e);
+    list_remove(e);
+    e = e_next;
+    free(sp);
+  }
+  return;
+}
+
+void
+spage_elem_init(struct spage_elem *sp_elem)
+{
+  sp_elem->pd = NULL;
+  sp_elem->vaddr = NULL;
+  sp_elem->swap_id = 0;
+  sp_elem->file = NULL;
+  sp_elem->file_ofs = 0;
+  sp_elem->file_size = 0;
+  sp_elem->ploc = 0x000;
+  return;
+}  
+
+/* Lookup the supplemental page table for a user virtual address.
+   If the page exist, return pointer to entry, the specific location (memory, swap, filesys) is recorded in the spage_elem
+   If the page doesn't exist, return NULL. Should fire page_fault afterwards.
+*/
+struct spage_elem *
+spage_lookup_entry(uint32_t *pd, void *vaddr)
+{
+  struct list_elem *e;
+//  lock_acquire(&spt_lock);
+  for (e = list_begin (&sup_page_table); e != list_end (&sup_page_table); e = list_next (e))
+  {
+    struct spage_elem *sp = list_entry(e, struct spage_elem, elem);
+    ASSERT(sp);
+//    printf("look up, find 0x%x org 0x%x\n", sp->upage, upage);
+    if(sp->pd == pd && sp->vaddr == vaddr){
+//      lock_release(&spt_lock);
+      return sp;
+    }
+  }
+//  printf("Return NULL.\n");
+//  lock_release(&spt_lock);
+  return NULL;
+}
+
+
+/* Setup supplemental page table entry, the content of SPAGE_ELEM depends on the
+ location of page: 
+   If page in physical memory, record the frame table entry. 
+   If page in swap space, record swap_slot number. */
+void
+spage_set_entry (uint32_t *pd, void *upage, page_location ploc, uint32_t swapid, struct file* file, off_t file_ofs, off_t file_size)
+{
+  struct spage_elem *sp_elem;
+  sp_elem = spage_lookup_entry(pd, upage);
+  if(sp_elem == NULL){
+    sp_elem = (struct spage_elem *)malloc(sizeof(struct spage_elem));
+    spage_elem_init(sp_elem);
+    sp_elem->pd = pd;
+    sp_elem->vaddr = upage;
+    list_push_front(&sup_page_table, &sp_elem->elem);
+  }
+  sp_elem->ploc = sp_elem->ploc & 0x00;
+  sp_elem->ploc = sp_elem->ploc | ploc;
+
+/*  if(ploc == SPAGE_PMEM){
+    sp_elem->swap_id = NULL;
+    sp_elem->file = NULL;
+    sp_elem->file_ofs = 0;
+  }*/
+  if(ploc & SPAGE_FS){
+    sp_elem->file = file;
+    sp_elem->file_ofs = file_ofs;
+    sp_elem->file_size = file_size;
+    sp_elem->swap_id = 0;
+  }
+  if((ploc & SPAGE_SWAP) && (ploc & (~SPAGE_PMEM))){
+    sp_elem->swap_id = swapid;
+    sp_elem->file = NULL;
+    sp_elem->file_ofs = 0;
+    sp_elem->file_size = 0;
+  }
+//  printf("spage_entry_set.\n");
+  return;
+} 
+ 
+void
+spage_remove_entry(struct spage_elem *sp_elem)
+{
+//  lock_acquire(&spt_lock); 
+  list_remove(&sp_elem->elem);
+  free(sp_elem);
+//  lock_release(&spt_lock);
+//  printf("spage_entry_removed\n");
+  return;
+}
+  
+bool
+spage_handle_pf(uint32_t *pd, void *upage, bool write){
+  lock_acquire(&spt_lock);
+  struct spage_elem * sp_entry = spage_lookup_entry(pd, upage);
+  if(sp_entry == NULL )
+    goto return_false;
+  if(sp_entry->ploc & SPAGE_SWAP) {
+//    printf("++++ IN SWAP SLOT %u\n", sp_entry->swap_id);
+    void *kpage = palloc_get_page(PAL_USER | PAL_ZERO);
+    if(kpage == NULL ){
+      kpage = page_eviction();
+      ASSERT(kpage);
+      memset(kpage, 0, PGSIZE);
+    }
+//    printf("+++++ GET OR EVICT A PAGE\n");
+    swap_out_page(kpage, sp_entry ->swap_id);
+    //TODO: verify it is a writable page
+    /* Need to reset page table entry and then flush TLB */
+    pagedir_set_page(pd, upage, kpage, true);
+    frame_set_pte(pd, upage, FTE_SWAP);
+    pagedir_activate(pd);
+    spage_remove_entry(sp_entry);
+//    printf("++++ HANDLED TRUE\n");
+    goto return_true;
+  } else if(sp_entry->ploc & SPAGE_FS ) {
+    bool writable = sp_entry->ploc & FTE_W;
+    if(write && !writable)
+      goto return_false;
+    printf("xxxx EXIT due to not handle SPAGE_FS");
+  } else {
+    printf("xxxx EXIT due to not handle ELSE");
+  }
+return_true:
+  lock_release(&spt_lock);
+  return true;
+return_false:
+  lock_release(&spt_lock);
+  return false;
+}
+

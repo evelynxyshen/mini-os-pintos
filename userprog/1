@@ -1,0 +1,28 @@
+#include "userprog/syscall.h"
+#include <stdio.h>
+#include <syscall-nr.h>
+#include "threads/interrupt.h"
+#include "threads/thread.h"
+
+static void syscall_handler (struct intr_frame *);
+
+void
+syscall_init (void) 
+{
+  intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
+}
+
+static void
+syscall_handler (struct intr_frame *f UNUSED) 
+{
+  //TODO:
+  printf ("I will need to implement here!\n");
+  printf ("SYS_OPEN %d\n", SYS_OPEN);
+  printf ("SYS_WRITE %x\n", SYS_WRITE);
+  printf ("ESP addr is %x\n",(unsigned int) f->esp);
+  printf ("ESP %x\n", *((int32_t *)f->esp));
+  printf ("Number of Argument is %d\n", *((int *)(f->esp+4)));
+  printf ("argv[0] is %s \n", * (char **)(f->esp+8));
+  printf ("system call!\n");
+  thread_exit ();
+}

@@ -1,0 +1,19 @@
+#!/bin/bash
+
+source=vm
+# source=userprog
+# source=threads
+
+dest=../../pintos_HW/cs140_HW/src
+# dest=../../../pintos_svn/src
+
+echo "************ DIFF DIRECTORY: ${source} ****************"
+
+for i in `ls -a ${source}/*.*`  
+do  
+echo "************ DIFF FILE: $i ****************"
+diff $i ${dest}/$i
+# cp $i ${dest}/$i
+done
+
+
